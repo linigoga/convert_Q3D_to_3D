@@ -1,0 +1,112 @@
+build_info = {
+  "version": "4.4.4-217-g2d930f4",
+  "branch": "dev",
+  "dimensions": "2",
+  "precision": "DOUBLE",
+  "build_type": "production",
+  "system": "macosx.gnu.bertrand",
+  "build_tool": "make",
+  "build_flags": {
+    "FPP"  :"/usr/local/opt/gcc/bin/gcc-9 -C -E -x assembler-with-cpp -D__HAS_MPI_IN_PLACE__ -D_OPENMP -DHDF5",
+    "FPPF" :"-DP_X_DIM=2 -DOS_REV=\"4.4.4-217-g2d930f4\" -DFORTRANSINGLEUNDERSCORE -DPRECISION_DOUBLE -DFFTW_ENABLED -DENABLE_RAD -DENABLE_TILES -DENABLE_PGC -DENABLE_QED -DENABLE_SHEAR -DENABLE_CYLMODES -DENABLE_QEDCYL -DENABLE_OVERDENSE -DENABLE_XXFEL",
+    "F90"  :"/usr/local/opt/gcc/bin/gfortran ",
+    "F90F" :"-pipe -ffree-line-length-none -fno-range-check --openmp -Ofast -march=native -I/usr/local/Cellar/open-mpi/4.0.3/include -Wl,-flat_namespace -Wl,-commons,use_dylibs -I/usr/local/Cellar/open-mpi/4.0.3/lib -I/usr/local/opt/hdf5/include -I/usr/local/opt/fftw/include",
+    "CF"   :"-Ofast -march=native -std=c99 -I/usr/local/opt/open-mpi/include -DFORTRANSINGLEUNDERSCORE -DPRECISION_DOUBLE -D__MACH_TIMER__",
+    "cc"   :"/usr/local/opt/gcc/bin/gcc-9",
+    "LDF"  :" -L/usr/local/opt/hdf5/lib -lhdf5_fortran -lhdf5 -lz -lm -Wl,-flat_namespace -Wl,-commons,use_dylibs -I/usr/local/Cellar/open-mpi/4.0.3/lib -L/usr/local/opt/libevent/lib -L/usr/local/Cellar/open-mpi/4.0.3/lib -lmpi_usempif08 -lmpi_usempi_ignore_tkr -lmpi_mpifh -lmpi /usr/local/opt/fftw/lib/libfftw3.a",
+   }
+}
+run_info = {
+  "input_deck_crc":         3291229333.,
+  "input_deck": """
+simulation
+{
+  algorithm = 'quasi-3D',
+  omega_p0 = 2.36e15, ! we normalise to the laser wavelength = 0.8 microns
+}
+
+!----------the node configuration for this simulation---------
+node_conf
+{
+  node_number(1:2) = 2, 2,
+  if_periodic(1:2) = .false., .false.,
+}
+
+!----------spatial grid----------
+grid 
+{
+  nx_p(1:2) = 650, 200,
+  coordinates = "cylindrical",
+  n_cyl_modes = 1,
+}
+
+!----------time step and global data dump timestep number----------
+time_step 
+{
+  dt = 0.1,
+  ndump = 1,
+}
+
+!----------spatial limits of the simulations----------
+space 
+{
+  xmin(1:2) = -100.0,  0.0,
+  xmax(1:2) =   30.0, 40.0,
+  if_move = .true., .false.,
+}
+
+!----------time limits ----------
+time 
+{
+  tmin = 0.00, 
+  tmax = 0.05,
+}
+
+el_mag_fld
+{
+}
+
+!----------boundary conditions for em-fields ----------
+emf_bound 
+{
+  type(1:2,1) =  "open", "open",
+  type(1:2,2) =  "axial", "open",
+}
+
+!----------diagnostic for electromagnetic fields---------- 
+diag_emf
+{
+  ndump_fac = 1,
+  ndump_fac_ene_int = 1,
+  reports = "e1_cyl_m", "e2_cyl_m", "e3_cyl_m", "b1_cyl_m", "b2_cyl_m", "b3_cyl_m",
+}
+
+particles 
+{  
+  num_species = 0,
+  interpolation =  "quadratic",
+}
+
+zpulse
+{
+  a0 = 50.0,
+  omega0 = 1.0,
+  pol_type = 0,
+  pol = 0.0,
+
+  propagation = "forward",
+
+  lon_type = "polynomial",
+  lon_rise = 31.4,
+  lon_fall = 31.4,
+  lon_start = -33.6,
+
+  per_type = "gaussian",
+  per_center = 0.0, 0.0,
+  per_w0 = 20.0,
+  per_focus = 0.0,
+}
+
+
+"""
+}
