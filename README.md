@@ -39,8 +39,8 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 1.  **Clone the Repository (or Download the Files):**
     ```bash
-    git clone <your_repository_url>
-    cd <repository_name>
+    git clone <https://github.com/linigoga/convert_Q3D_to_3D>
+    cd <https://github.com/linigoga/convert_Q3D_to_3D>
     ```
     If you don't use git, download the files (`transform_data.py`, `utils.pyx`, `setup.py`) and place them in the same directory.
 
@@ -56,7 +56,8 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 3.  **Install Dependencies:**
     ```bash
-    pip install numpy scipy h5py cython setuptools
+    pip install numpy scipy h5py cython setuptools      # Using pip
+    conda install numpy scipy h5py cython setuptools    # Using conda
     ```
 
 4.  **Build the Cython Extension:**
