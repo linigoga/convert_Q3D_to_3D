@@ -435,6 +435,7 @@ class ProcessData():
         all_files = uts.find_files_by_extension(folder, file_extension)
         filtered_files = uts.filter_files(all_files, self.species, self.data_type)
         filtered_files = sorted(filtered_files)  # Sorting is good practice
+        
 
 
         # You probably don't need this anymore, since filtering is robust
@@ -500,13 +501,9 @@ class ProcessData():
         
         full_dictionary = {}
 
-
-
-
         for dump in all_dumps:
             #we get the files in this directory
             curr_timestep_files = [file for file in filtered_files if f'{dump}' in file]
-            
             
             mode_dict = {}
             for mode in range(self.mode + 1):
@@ -515,16 +512,16 @@ class ProcessData():
                 if mode == 0:
 
                     file_dictionary[f'mode_{mode}_charge_re'] = [file for file in curr_timestep_files
-                                                                if f'MODE-{mode}' in file and f'charge_cyl_m-{self.species}' in file]
+                                                                if f'MODE-{mode}' in file and f'{key}-{self.species}' in file.lower()]
                     
-                    comp_dict['re'] = [file_dictionary[key] for key in file_dictionary.keys() if 're' in key]
+                    comp_dict['re'] = [file_dictionary[key] for key in file_dictionary.keys() if 're' in key.lower()]
                     
                     
                 if mode >= 1:
                     file_dictionary[f'mode_{mode}_charge_re'] = [file for file in curr_timestep_files
-                                                                if f'MODE-{mode}' in file and f'charge_cyl_m-{self.species}' in file and 'RE' in file]
+                                                                if f'MODE-{mode}' in file and f'{key}-{self.species}' in file and '-re-' in file.lower()]
                     file_dictionary[f'mode_{mode}_charge_im'] = [file for file in curr_timestep_files
-                                                                if f'MODE-{mode}' in file and f'charge_cyl_m-{self.species}' in file and 'IM' in file]
+                                                                if f'MODE-{mode}' in file and f'{key}-{self.species}' in file and '-im-' in file.lower()]
 
                     
                     comp_dict['im'] = [file_dictionary[key] for key in file_dictionary.keys() if 'im' in key]

@@ -93,7 +93,6 @@ cdef class utilities:
         """
         cdef double min_z, max_z, min_r, max_r
         cdef int nz, nr
-        fdata = np.zeros((nr, nz), dtype=np.float64)
 
         # Open the file
         with h5py.File(path, 'r') as f:
