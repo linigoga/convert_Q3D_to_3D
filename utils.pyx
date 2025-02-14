@@ -466,7 +466,7 @@ cdef class utilities:
 
         # Use np.interp to generate initial interpolated charge
         interpolated_charge = np.interp(R, r, charge)
-
+        
         # Loop through all other modes to sum up their contributions
         for mode in range(1, mode_number + 1): 
 
@@ -783,7 +783,7 @@ cdef class utilities:
         #Have a loop to correct the domain and save on site
         for mode, mode_data in file.items():  # mode will be '0', '1', etc.
             for part, paths in mode_data.items():  # part will be 're' or 'im'
-                print(f"Mode: {mode}, Part: {part}, Paths: {paths}")
+                
                 for idx, path in enumerate(paths):  # idx will index over 'path_to_file1',
                     key = f"{mode}_{part}_field_{idx + 1}"
 
@@ -847,7 +847,6 @@ cdef class utilities:
         X, Y = np.meshgrid(x, y)
         
         R = np.sqrt(X**2 + Y**2)
-        
         
         theta = np.arctan2(Y, X)
 

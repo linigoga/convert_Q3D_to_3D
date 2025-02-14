@@ -507,10 +507,14 @@ class ProcessData():
             
             mode_dict = {}
             for mode in range(self.mode + 1):
+                # Here we separate the files respective to their modes and im or real part
+
+                
                 file_dictionary = {}
                 comp_dict = {}
                 if mode == 0:
-
+                    
+                    
                     file_dictionary[f'mode_{mode}_charge_re'] = [file for file in curr_timestep_files
                                                                 if f'MODE-{mode}' in file and f'{key}-{self.species}' in file.lower()]
                     
@@ -540,18 +544,18 @@ class ProcessData():
             
             if timestep is None:
                 print('Converting dump {:d} '.format(i_file))
-                uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, mode)
+                uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, self.mode)
 
             elif (type(timestep) is int) or (type(timestep) is float) :
                 if float(dump) == timestep:
                     print('Converting dump {:d} '.format(i_file))
-                    uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, mode)
+                    uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, self.mode)
 
 
             elif(type(timestep) is list) or (type(range_timestep) is np.ndarray):
                 if float(dump) in range_timestep: 
                     print('Converting dump {:d} '.format(i_file))
-                    uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species,  i_file, mode)
+                    uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species,  i_file, self.mode)
 
 
         print('job finished')
