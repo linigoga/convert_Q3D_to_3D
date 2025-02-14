@@ -62,9 +62,9 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 4.  **Build the Cython Extension:**
     ```bash
-    pip install -e .
+    python setup.py build_ext --inplace
     ```
-    This command compiles the `utils.pyx` file into a highly optimized C extension (or C++ extension, as configured) that can be imported by `transform_data.py`.  The `-e` (editable) flag is crucial during development, as it means changes to `utils.pyx` are reflected immediately without needing a reinstallation.
+    This command compiles the `utils.pyx` file into a highly optimized C extension (or C++ extension, as configured) that can be imported by `transform_data.py`.
 
 ## 4. Usage
 
