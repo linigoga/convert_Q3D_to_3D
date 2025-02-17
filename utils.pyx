@@ -792,7 +792,7 @@ cdef class utilities:
 
 
         
-        sample_key = f'mode_0_re_field_1'
+        sample_key = list(data.keys())[0]
 
         nr, nz = data[sample_key].shape
         
