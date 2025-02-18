@@ -39,8 +39,8 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 1.  **Clone the Repository (or Download the Files):**
     ```bash
-    git clone <https://github.com/linigoga/convert_Q3D_to_3D>
-    cd <https://github.com/linigoga/convert_Q3D_to_3D>
+    git clone https://github.com/linigoga/convert_Q3D_to_3D
+    cd https://github.com/linigoga/convert_Q3D_to_3D
     ```
     If you don't use git, download the files (`transform_data.py`, `utils.pyx`, `setup.py`) and place them in the same directory.
 
@@ -92,6 +92,7 @@ convert e1 field for a lineout, for modes 0 and 1:
 
 ## 10. Authors
 
-- Lucas Inigo Gamiz
+- Lucas Ivan Iñigo Gamiz
 - Bertrand Martinez
 - Óscar Amaro
+- Róbert Babjak

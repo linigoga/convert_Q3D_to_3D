@@ -538,9 +538,14 @@ cdef class utilities:
         for mode, mode_data in file.items():  # mode will be '0', '1', etc.
             for part, paths in mode_data.items():  # part will be 're' or 'im'
                 for idx, path in enumerate(paths):  # idx will index over 'path_to_file1', 'path_to_file2', etc.
-                    min_z, max_z, nz, min_r, max_r, nr, charge_data = self.read_file_2d(path[0])
-                    key = f'{mode}_{part}_charge'
-                    data[key] = charge_data  
+                    try:
+                        min_z, max_z, nz, min_r, max_r, nr, charge_data = self.read_file_2d(path[0])
+                        key = f'{mode}_{part}_charge'
+                        data[key] = charge_data  
+                    except IndexError:
+                        print(f'issue at {path} perhaps a -savg True or -m 0 flag is needed')
+                        break
+                    
         
         step_z,step_r = self.step_z, self.step_r
         axis_z = np.linspace(min_z, max_z, nz)
@@ -684,9 +689,6 @@ cdef class utilities:
 
 
 
-
-
-
     cpdef void convert_and_write_hdf5_file_fields(self,
                                            dict file,
                                            str target_directory,
@@ -756,8 +758,12 @@ cdef class utilities:
         for mode, mode_data in file.items():  # mode will be '0', '1', etc.
             for part, paths in mode_data.items():  # part will be 're' or 'im'
                 for idx, path in enumerate(paths):  # idx will index over 'path_to_file1', 'path_to_file2', etc.
-                    min_z, max_z, nz, min_r, max_r, nr, field_data = self.read_file_2d(path[0])
-                    # Generate a key based on mode, part (real/imaginary), and field index (Ez/Er/Et)
+                    try:
+                        min_z, max_z, nz, min_r, max_r, nr, field_data = self.read_file_2d(path[0])
+                        # Generate a key based on mode, part (real/imaginary), and field index (Ez/Er/Et)
+                    except IndexError:
+                        print(f'issue at {path} perhaps a -savg True or -m 0 flag is needed')
+                        break
                     
                     key = f"{mode}_{part}_field_{idx + 1}"
                     data[key] = field_data  
