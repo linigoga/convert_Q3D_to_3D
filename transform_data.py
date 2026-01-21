@@ -15,9 +15,9 @@ The code will then convert the charge data from 2D to 3D and output the converte
 For convenience, one can used VISX to visualize the converted files. It, however, can also be used with Python and other visualization tools.
 
 The authos of the code are:
+    - Lucas Inigo Gamiz
     - Bertrand Martinez
     - Oscar Amaro
-    - Lucas Inigo Gamiz
 
 Also, I would like to acknowledge Rafael Russo Almeida for his help.
 
@@ -28,13 +28,101 @@ Also, I would like to acknowledge Rafael Russo Almeida for his help.
 import argparse
 import os
 import sys
+import re
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.ndimage import map_coordinates
 import h5py
 import shutil
 import timeit
+import multiprocessing as mp
+from functools import partial
 
+
+
+# Global function for parallel processing (needs to be at module level for pickling)
+def process_single_dump_charge(args):
+    """Process a single dump for charge conversion - designed for parallel execution"""
+    dump, file_dict, dest_directory, species, i_file, mode, step_z, step_r, domain = args
+    import utils
+    uts = utils.utilities()
+    uts.set_step_z(step_z)
+    uts.set_step_r(step_r)
+    if domain is not None:
+        domain_dict = {}
+        domain_dict['r'] = domain[:2]
+        domain_dict['z'] = domain[2:]
+        uts.set_domain_size(domain_dict)
+    else:
+        uts.set_domain_size(domain)
+    
+    print(f'Converting dump {i_file} (timestep {dump})')
+    try:
+        uts.convert_and_write_hdf5_file_densities(file_dict, dest_directory, species, i_file, mode)
+        return (dump, True, None)
+    except Exception as e:
+        return (dump, False, str(e))
+
+
+def process_single_dump_field(args):
+    """Process a single dump for field conversion - designed for parallel execution"""
+    dump, file_dict, dest_directory, conversion_map, mode, i_file, s_avg, step_z, step_r, domain, field_type, key = args
+    import utils
+    uts = utils.utilities()
+    uts.set_step_z(step_z)
+    uts.set_step_r(step_r)
+    if domain is not None:
+        domain_dict = {}
+        domain_dict['r'] = [domain[0], domain[1]]
+        domain_dict['z'] = [domain[2], domain[-1]]
+        uts.set_domain_size(domain_dict)
+    else:
+        uts.set_domain_size(domain)
+    
+    print(f'Converting dump {i_file} (timestep {dump})')
+    try:
+        # Get direction value from conversion map
+        dir_val = conversion_map.get(key, '3')  # Default to '3' if not found
+        
+        if field_type == 'e':
+            uts.convert_and_write_hdf5_file_fields(file_dict, dest_directory,
+                                                   f'e1_cyl_m{s_avg}', 
+                                                   f'e2_cyl_m{s_avg}', 
+                                                   f'e3_cyl_m{s_avg}', 
+                                                   i_file, mode, dir_val)
+        else:
+            uts.convert_and_write_hdf5_file_fields(file_dict, dest_directory,
+                                                   f'b1_cyl_m{s_avg}', 
+                                                   f'b2_cyl_m{s_avg}', 
+                                                   f'b3_cyl_m{s_avg}', 
+                                                   i_file, mode, dir_val)
+        return (dump, True, None)
+    except Exception as e:
+        return (dump, False, str(e))
+
+
+def process_single_dump_raw(args):
+    """Process a single dump for raw conversion - designed for parallel execution"""
+    file_path, dest_directory, species, i_file, step_z, step_r, domain = args
+    import utils
+    uts = utils.utilities()
+    uts.set_step_z(step_z)
+    uts.set_step_r(step_r)
+    if domain is not None:
+        domain_dict = {}
+        domain_dict['r'] = domain[:2]
+        domain_dict['z'] = domain[2:]
+        uts.set_domain_size(domain_dict)
+    else:
+        uts.set_domain_size(domain)
+    
+    print(f'Converting dump {i_file}')
+    try:
+        uts.convert_and_write_hdf5_file_raws(file_path, dest_directory, species, i_file, 
+                                            if_conv_ene_to_gev=True, if_reduce=False, step=1)
+        return (i_file, True, None)
+    except Exception as e:
+        return (i_file, False, str(e))
 
 
 class ProcessData():
@@ -50,7 +138,9 @@ class ProcessData():
                 spatial_average : bool,
                 lineout : bool,
                 step_z : int,
-                step_r : int):
+                step_r : int,
+                parallel : bool = False,
+                n_workers : int = None):
         
         self.file_path = file_path
         self.data_type = data_type
@@ -64,36 +154,43 @@ class ProcessData():
         self.lineout = lineout
         self.step_z = step_z
         self.step_r = step_r
+        self.parallel = parallel
+        self.n_workers = n_workers if n_workers is not None else min(mp.cpu_count(), 4)
         import utils
         self.utils = utils.utilities()  # Create an instance of utilities
 
 
 
-    def get_timestep_of_simulation(self,path_of_file) -> int:
+    def get_timestep_of_simulation(self, path_of_file) -> int:
         """
         Get the timestep of the simulation from the file name
 
         """
-        
-        if type(path_of_file) is list:
-
-            new_path = str(path_of_file[0])
-        
-            timestep = new_path.split('.h5')[0].split('-')[-1].split('_')[0]        
-
+        # Use rsplit for better performance when splitting from the end
+        if isinstance(path_of_file, list):
+            path_str = str(path_of_file[0])
         else:
-            timestep = path_of_file.split('.h5')[0].split('-')[-1].split('_')[0]        
-
-        return int(timestep)
+            path_str = str(path_of_file)
+        
+        # More efficient: find last occurrence and extract
+        if '.h5' in path_str:
+            path_str = path_str.rsplit('.h5', 1)[0]
+        if '-' in path_str:
+            timestep_str = path_str.rsplit('-', 1)[-1].split('_')[0]
+        else:
+            timestep_str = path_str.split('_')[0]
+        
+        return int(timestep_str)
     
-    def helper_function(self,all_files):
-        timesteps = []
+    def helper_function(self, all_files):
+        # Use set for O(1) lookup instead of list
+        timesteps_set = set()
         for file in all_files:
             timestep = self.get_timestep_of_simulation(file)
-            if timestep not in timesteps:
-                timesteps.append(timestep)
-        timesteps = sorted(timesteps)
-        str_timesteps = [str(timestep).zfill(5) for timestep in timesteps]
+            timesteps_set.add(timestep)
+        timesteps = sorted(timesteps_set)
+        # Format once instead of converting to string twice
+        str_timesteps = [f"{timestep:05d}" for timestep in timesteps]
         return str_timesteps
 
     def convert_fields(self):
@@ -148,10 +245,9 @@ class ProcessData():
         filtered_files = sorted(filtered_files)
 
         # --- Filter for the specific FIELD this time (e.g., e1, e2, b3) ---
-        files_field = [
-        file for file in filtered_files
-        if f'{self.field}_cyl_m' in file #Correct filter
-        ]
+        # Pre-compute field string to avoid repeated f-string formatting
+        field_pattern = f'{self.field}_cyl_m'
+        files_field = [file for file in filtered_files if field_pattern in file]
 
         if not files_field:
             print(f"No matching files found for field: {self.field}")
@@ -160,17 +256,35 @@ class ProcessData():
         # Now it's safe to access files_field[0]
         source_directory = os.path.dirname(files_field[0]) + '/' #More robust way to create the directory
 
-        # Create a destination folder (improved handling)
-        #dest_directory = source_directory + 'to_3D/'
-
-        for element in files_field[0].split('/')[:-1]:
-            source_directory += element + '/'
+        # Use os.path.join for more efficient path construction
+        source_directory = os.path.dirname(files_field[0])
+        if source_directory and not source_directory.endswith('/'):
+            source_directory += '/'
 
         #make the list of fields corresponding to the mode and real or imaginary:
         
-
-        # Create a destination folder with all converted files
-        dest_directory = os.path.join(self.output_path,f'{self.data_type}_{self.field}_to_3D/')
+        # Determine output directory: if output_path is default ('.'), use source directory
+        if self.output_path == '.' or self.output_path == os.getcwd():
+            # Create subdirectory in FLD directory: e.g., MS/FLD/e2_3D/
+            # Find the FLD directory level
+            source_dir = os.path.dirname(files_field[0])
+            parts = source_dir.split(os.sep)
+            # Find FLD directory and create field_3D subdirectory there
+            fld_idx = -1
+            for i, part in enumerate(parts):
+                if part == 'FLD':
+                    fld_idx = i
+                    break
+            if fld_idx >= 0:
+                fld_dir = os.sep.join(parts[:fld_idx+1])
+                dest_directory = os.path.join(fld_dir, f'{self.field}_3D')
+            else:
+                # Fallback: use parent directory
+                dest_directory = os.path.join(os.path.dirname(source_dir), f'{self.field}_3D')
+        else:
+            # Use specified output path
+            dest_directory = os.path.join(self.output_path, f'{self.data_type}_{self.field}_to_3D')
+        
         if os.path.exists(dest_directory):
             shutil.rmtree(dest_directory)
         os.makedirs(dest_directory, exist_ok=True)
@@ -228,15 +342,14 @@ class ProcessData():
             
         
         def helper_function2(all_files):
-            dumps = []
+            # Use set for O(1) lookup instead of list
+            dumps_set = set()
             for file in all_files:
                 dump = self.get_timestep_of_simulation(file)
-                if dump is None:
-                    continue
-                elif dump not in dumps:
-                    dumps.append(str(dump).zfill(6))
-
-            return dumps
+                if dump is not None:
+                    dumps_set.add(dump)
+            # Format once instead of converting to string twice
+            return [f"{dump:06d}" for dump in sorted(dumps_set)]
 
 
         all_dumps = helper_function2(filtered_files)
@@ -283,19 +396,45 @@ class ProcessData():
                 mode_dict[f'mode_{mode}'] = comp_dict
             full_dictionary[f'{dump}'] = mode_dict
          
-        for i_file, dump in enumerate(full_dictionary) :
-            if timestep is None:
-                print('Converting dump {:d} '.format(i_file))
-                helper_function(full_dictionary[dump],dest_directory,conversion_map,mode,i_file,s_avg)
+        # Helper function to check if a timestep should be processed
+        def should_process_timestep_fields(dump_val, ts, ts_range):
+            if ts is None:
+                return True
+            elif isinstance(ts, (int, float)):
+                return float(dump_val) == ts
+            elif isinstance(ts_range, np.ndarray):
+                return float(dump_val) in ts_range
+            return False
+
+        # Prepare list of dumps to process
+        dumps_to_process = []
+        for i_file, dump in enumerate(full_dictionary):
+            if should_process_timestep_fields(dump, timestep, range_timestep if 'range_timestep' in locals() else None):
+                dumps_to_process.append((i_file, dump))
+
+        # Process dumps (parallel or sequential)
+        if self.parallel and len(dumps_to_process) > 1:
+            print(f'Processing {len(dumps_to_process)} timesteps in parallel with {self.n_workers} workers...')
+            args_list = [
+                (dump, full_dictionary[dump], dest_directory, conversion_map, mode, i_file, s_avg,
+                 self.step_z, self.step_r, self.domain, field_type, key)
+                for i_file, dump in dumps_to_process
+            ]
             
-            elif (type(timestep) is int) ^ (type(timestep) is float) :
-                if float(dump) == timestep:
-                    print('Converting dump {:d} '.format(i_file))
-                    helper_function(full_dictionary[dump],dest_directory,conversion_map,mode,i_file,s_avg)
-            elif(type(range_timestep) is np.ndarray):
-                if float(dump) in range_timestep: 
-                    print('Converting dump {:d} '.format(i_file))
-                    helper_function(full_dictionary[dump],dest_directory,conversion_map,mode,i_file,s_avg)
+            with mp.Pool(processes=self.n_workers) as pool:
+                results = pool.map(process_single_dump_field, args_list)
+            
+            # Check for errors
+            errors = [r for r in results if not r[1]]
+            if errors:
+                print(f'Warning: {len(errors)} timestep(s) had errors:')
+                for dump, success, error in errors:
+                    print(f'  Timestep {dump}: {error}')
+        else:
+            # Sequential processing (original code)
+            for i_file, dump in dumps_to_process:
+                print('Converting dump {:d} '.format(i_file))
+                helper_function(full_dictionary[dump], dest_directory, conversion_map, mode, i_file, s_avg)
 
         end_time = timeit.default_timer() - init_time
         print('job finished, total time: ', end_time, 's')
@@ -326,9 +465,9 @@ class ProcessData():
             filtered_files = sorted(uts.filter_files(all_files,self.species,self.data_type))
             #remove to_3D files
             filtered_files = [file for file in filtered_files if 'to_3D' not in file]
-            source_directory = ''
-            for element in filtered_files[0].split('/')[:-1]:
-                source_directory += element + '/'
+            source_directory = os.path.dirname(filtered_files[0])
+            if source_directory and not source_directory.endswith('/'):
+                source_directory += '/'
 
             """
             source_directory = folder + 'MS/RAW/' + spc + '/'
@@ -336,12 +475,17 @@ class ProcessData():
             N_files = len(files)
             """
 
-            # Create a destination folder with all converted files
+            # Determine output directory: if output_path is default ('.'), use source directory
+            if self.output_path == '.' or self.output_path == os.getcwd():
+                # Create subdirectory in source directory: e.g., MS/RAW/electrons_3D/
+                dest_directory = os.path.join(os.path.dirname(source_directory.rstrip('/')), f'{self.species}_3D')
+            else:
+                # Use specified output path
+                dest_directory = os.path.join(self.output_path, f'{self.data_type}_{self.species}_to_3D')
             
-            dest_directory = os.path.join(self.output_path, f'{self.data_type}_{self.species}_to_3D/')
-            if os.path.isdir(dest_directory) :
-                os.system('rm -r '+dest_directory)
-            os.mkdir(dest_directory)
+            if os.path.exists(dest_directory):
+                shutil.rmtree(dest_directory)
+            os.makedirs(dest_directory, exist_ok=True)
 
             print(f"Destination directory: {dest_directory}")
             
@@ -365,20 +509,46 @@ class ProcessData():
             
         
             
-            for i_file, file in enumerate(filtered_files) :
-                if timestep is None:
-                    print('Converting dump {:d} '.format(i_file))
-                    uts.convert_and_write_hdf5_file_raws(file,dest_directory, spc, i_file, if_conv_ene_to_gev=True, if_reduce=False, step=1)
-                
-                elif (type(timestep) is int) ^ (type(timestep) is float) :
-                    if self.get_timestep_of_simulation(file) == timestep:
-                        print('Converting dump {:d} '.format(i_file))
-                        uts.convert_and_write_hdf5_file_raws(file,dest_directory, spc, i_file, if_conv_ene_to_gev=True, if_reduce=False, step=1)
+            # Helper function to check if a file should be processed
+            def should_process_file_raw(file_path, ts, ts_range):
+                file_ts = self.get_timestep_of_simulation(file_path)
+                if ts is None:
+                    return True
+                elif isinstance(ts, (int, float)):
+                    return file_ts == ts
+                elif isinstance(ts_range, np.ndarray):
+                    return file_ts in ts_range
+                return False
 
-                elif(type(range_timestep) is np.ndarray):
-                    if self.get_timestep_of_simulation(file) in range_timestep: 
-                        print('Converting dump {:d} '.format(i_file))
-                        uts.convert_and_write_hdf5_file_raws(file,dest_directory, spc, i_file, if_conv_ene_to_gev=True, if_reduce=False, step=1)
+            # Prepare list of files to process
+            files_to_process = []
+            for i_file, file in enumerate(filtered_files):
+                if should_process_file_raw(file, timestep, range_timestep if 'range_timestep' in locals() else None):
+                    files_to_process.append((i_file, file))
+
+            # Process files (parallel or sequential)
+            if self.parallel and len(files_to_process) > 1:
+                print(f'Processing {len(files_to_process)} files in parallel with {self.n_workers} workers...')
+                args_list = [
+                    (file_path, dest_directory, spc, i_file, self.step_z, self.step_r, self.domain)
+                    for i_file, file_path in files_to_process
+                ]
+                
+                with mp.Pool(processes=self.n_workers) as pool:
+                    results = pool.map(process_single_dump_raw, args_list)
+                
+                # Check for errors
+                errors = [r for r in results if not r[1]]
+                if errors:
+                    print(f'Warning: {len(errors)} file(s) had errors:')
+                    for i_file, success, error in errors:
+                        print(f'  File {i_file}: {error}')
+            else:
+                # Sequential processing (original code)
+                for i_file, file in files_to_process:
+                    print('Converting dump {:d} '.format(i_file))
+                    uts.convert_and_write_hdf5_file_raws(file, dest_directory, spc, i_file, 
+                                                        if_conv_ene_to_gev=True, if_reduce=False, step=1)
 
             print('job finished')
 
@@ -435,15 +605,14 @@ class ProcessData():
         all_files = uts.find_files_by_extension(folder, file_extension)
         filtered_files = uts.filter_files(all_files, self.species, self.data_type)
         filtered_files = sorted(filtered_files)  # Sorting is good practice
-        
 
 
         # You probably don't need this anymore, since filtering is robust
-        source_directory = ''
         if filtered_files:  # Avoid IndexError if no files are found
-             for element in filtered_files[0].split('/')[:-1]:
-                 source_directory += element + '/'
-             print(f"Source directory: {source_directory}")
+            source_directory = os.path.dirname(filtered_files[0])
+            if source_directory and not source_directory.endswith('/'):
+                source_directory += '/'
+            print(f"Source directory: {source_directory}")
 
         # ... (Rest of your conversion logic, using filtered_files) ...
         # Make sure you handle the case where filtered_files might be empty!
@@ -459,12 +628,34 @@ class ProcessData():
         N_files = len(files)
         """
 
-
-        # Create a destination folder with all converted files
-        dest_directory = os.path.join(self.output_path, f'{self.data_type}_{self.species}_to_3D/')
-        if os.path.isdir(dest_directory) :
-            os.system('rm -r '+dest_directory)
-        os.mkdir(dest_directory)
+        # Determine output directory: if output_path is default ('.'), use source directory
+        if self.output_path == '.' or self.output_path == os.getcwd():
+            # Create subdirectory in source directory: e.g., MS/DENSITY/electrons_3D/
+            # Find the species directory (parent of MODE-X-RE directories)
+            source_dir = os.path.dirname(filtered_files[0])
+            # Go up to the species level (e.g., from MODE-0-RE/charge_cyl_m/ to electrons/)
+            # Keep going up until we're at the species directory level
+            parts = source_dir.split(os.sep)
+            # Find the index of the species name in the path
+            species_idx = -1
+            for i, part in enumerate(parts):
+                if part == self.species:
+                    species_idx = i
+                    break
+            if species_idx >= 0:
+                # Reconstruct path up to species directory
+                species_dir = os.sep.join(parts[:species_idx+1])
+                dest_directory = os.path.join(species_dir, f'{self.species}_3D')
+            else:
+                # Fallback: use parent of source directory
+                dest_directory = os.path.join(os.path.dirname(source_dir), f'{self.species}_3D')
+        else:
+            # Use specified output path
+            dest_directory = os.path.join(self.output_path, f'{self.data_type}_{self.species}_to_3D')
+        
+        if os.path.exists(dest_directory):
+            shutil.rmtree(dest_directory)
+        os.makedirs(dest_directory, exist_ok=True)
 
         print(f"Destination directory: {dest_directory}")
         
@@ -483,15 +674,14 @@ class ProcessData():
 
         
         def helper_function2(all_files):
-            dumps = []
+            # Use set for O(1) lookup instead of list
+            dumps_set = set()
             for file in all_files:
                 dump = self.get_timestep_of_simulation(file)
-                if dump is None:
-                    continue
-                elif dump not in dumps:
-                    dumps.append(str(dump).zfill(6))
-
-            return dumps
+                if dump is not None:
+                    dumps_set.add(dump)
+            # Format once instead of converting to string twice
+            return [f"{dump:06d}" for dump in sorted(dumps_set)]
 
 
         
@@ -499,33 +689,56 @@ class ProcessData():
         #Here is the good stuff
         all_dumps = helper_function2(filtered_files)
         
+        # Auto-detect the maximum mode number from the files
+        def detect_max_mode(files):
+            max_mode = -1
+            for file_path in files:
+                # Look for MODE-X patterns in the file path
+                mode_matches = re.findall(r'MODE-(\d+)', file_path)
+                for mode_str in mode_matches:
+                    mode_num = int(mode_str)
+                    if mode_num > max_mode:
+                        max_mode = mode_num
+            return max_mode if max_mode >= 0 else 0  # Default to 0 if no modes found
+        
+        # Detect max mode from filtered files
+        detected_max_mode = detect_max_mode(filtered_files)
+        if detected_max_mode > self.mode:
+            print(f"Detected mode {detected_max_mode} in files, but user specified mode {self.mode}. Using detected mode {detected_max_mode}.")
+            self.mode = detected_max_mode
+        elif self.mode == 1 and detected_max_mode == 0:
+            print(f"Detected only mode 0 in files, but user specified mode {self.mode}. Using detected mode 0.")
+            self.mode = detected_max_mode
+        else:
+            print(f"Using mode {self.mode} (detected max: {detected_max_mode})")
+        
         full_dictionary = {}
+
+
+
 
         for dump in all_dumps:
             #we get the files in this directory
             curr_timestep_files = [file for file in filtered_files if f'{dump}' in file]
             
+            
             mode_dict = {}
             for mode in range(self.mode + 1):
-                # Here we separate the files respective to their modes and im or real part
-
-                
                 file_dictionary = {}
                 comp_dict = {}
                 if mode == 0:
-                    
-                    
+
                     file_dictionary[f'mode_{mode}_charge_re'] = [file for file in curr_timestep_files
-                                                                if f'MODE-{mode}' in file and f'{key}-{self.species}' in file.lower()]
+                                                                if f'MODE-{mode}' in file and f'charge_cyl_m-{self.species}' in file]
                     
-                    comp_dict['re'] = [file_dictionary[key] for key in file_dictionary.keys() if 're' in key.lower()]
+                    comp_dict['re'] = [file_dictionary[key] for key in file_dictionary.keys() if 're' in key]
                     
                     
                 if mode >= 1:
                     file_dictionary[f'mode_{mode}_charge_re'] = [file for file in curr_timestep_files
-                                                                if f'MODE-{mode}' in file and f'{key}-{self.species}' in file and '-re-' in file.lower()]
+                                                                if f'MODE-{mode}' in file and f'charge_cyl_m-{self.species}' in file and 'RE' in file]
                     file_dictionary[f'mode_{mode}_charge_im'] = [file for file in curr_timestep_files
-                                                                if f'MODE-{mode}' in file and f'{key}-{self.species}' in file and '-im-' in file.lower()]
+                                                                if f'MODE-{mode}' in file and f'charge_cyl_m-{self.species}' in file and 'IM' in file]
 
                     
                     comp_dict['im'] = [file_dictionary[key] for key in file_dictionary.keys() if 'im' in key]
@@ -539,24 +752,45 @@ class ProcessData():
         
         #We check if the timestep is None, if it is, we convert all files, otherwise we convert only the files with the timestep specified
 
+        # Helper function to check if a timestep should be processed
+        def should_process_timestep(dump_val, ts, ts_range):
+            if ts is None:
+                return True
+            elif isinstance(ts, (int, float)):
+                return float(dump_val) == ts
+            elif isinstance(ts_range, np.ndarray):
+                return float(dump_val) in ts_range
+            return False
 
-        for i_file, dump in enumerate(full_dictionary) :
+        # Prepare list of dumps to process
+        dumps_to_process = []
+        for i_file, dump in enumerate(full_dictionary):
+            if should_process_timestep(dump, timestep, range_timestep if 'range_timestep' in locals() else None):
+                dumps_to_process.append((i_file, dump))
+
+        # Process dumps (parallel or sequential)
+        if self.parallel and len(dumps_to_process) > 1:
+            print(f'Processing {len(dumps_to_process)} timesteps in parallel with {self.n_workers} workers...')
+            args_list = [
+                (dump, full_dictionary[dump], dest_directory, self.species, i_file, mode, 
+                 self.step_z, self.step_r, self.domain)
+                for i_file, dump in dumps_to_process
+            ]
             
-            if timestep is None:
+            with mp.Pool(processes=self.n_workers) as pool:
+                results = pool.map(process_single_dump_charge, args_list)
+            
+            # Check for errors
+            errors = [r for r in results if not r[1]]
+            if errors:
+                print(f'Warning: {len(errors)} timestep(s) had errors:')
+                for dump, success, error in errors:
+                    print(f'  Timestep {dump}: {error}')
+        else:
+            # Sequential processing (original code)
+            for i_file, dump in dumps_to_process:
                 print('Converting dump {:d} '.format(i_file))
-                uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, self.mode)
-
-            elif (type(timestep) is int) or (type(timestep) is float) :
-                if float(dump) == timestep:
-                    print('Converting dump {:d} '.format(i_file))
-                    uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, self.mode)
-
-
-            elif(type(timestep) is list) or (type(range_timestep) is np.ndarray):
-                if float(dump) in range_timestep: 
-                    print('Converting dump {:d} '.format(i_file))
-                    uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species,  i_file, self.mode)
-
+                uts.convert_and_write_hdf5_file_densities(full_dictionary[dump], dest_directory, self.species, i_file, mode)
 
         print('job finished')
     
@@ -615,6 +849,9 @@ def argparser():
     parser.add_argument('-line', '--lineout', metavar='LINEOUT', type=bool, default=False)
     parser.add_argument('-s_z', '--step_z', metavar='STEP_Z',type=int,default=2, help='step in z direction')
     parser.add_argument('-s_r', '--step_r', metavar='STEP_r',type=int,default=2, help='step in in r direction')
+    parser.add_argument('-p', '--parallel', action='store_true', help='enable parallel processing of timesteps')
+    parser.add_argument('-n', '--n_workers', metavar='N_WORKERS', type=int, default=None, 
+                        help='number of parallel workers (default: min(CPU_count, 4))')
     return parser.parse_args()
 
 
@@ -631,7 +868,9 @@ def main():
                                 argparse.spatial_average,
                                 argparse.lineout,
                                 argparse.step_z,
-                                argparse.step_r)
+                                argparse.step_r,
+                                argparse.parallel,
+                                argparse.n_workers)
 
     
     if argparse.data_type == 'charge':

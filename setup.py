@@ -5,6 +5,6 @@ import numpy
 
 
 setup(
-ext_modules=cythonize("utils.pyx"),
+ext_modules=cythonize("utils.pyx", language_level="3"),
 include_dirs=[numpy.get_include()]
 )

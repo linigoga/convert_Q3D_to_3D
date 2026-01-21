@@ -39,8 +39,8 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 1.  **Clone the Repository (or Download the Files):**
     ```bash
-    git clone https://github.com/linigoga/convert_Q3D_to_3D
-    cd https://github.com/linigoga/convert_Q3D_to_3D
+    git clone <your_repository_url>
+    cd <repository_name>
     ```
     If you don't use git, download the files (`transform_data.py`, `utils.pyx`, `setup.py`) and place them in the same directory.
 
@@ -56,15 +56,14 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 3.  **Install Dependencies:**
     ```bash
-    pip install numpy scipy h5py cython setuptools      # Using pip
-    conda install numpy scipy h5py cython setuptools    # Using conda
+    pip install numpy scipy h5py cython setuptools
     ```
 
 4.  **Build the Cython Extension:**
     ```bash
-    python setup.py build_ext --inplace
+    pip install -e .
     ```
-    This command compiles the `utils.pyx` file into a highly optimized C extension (or C++ extension, as configured) that can be imported by `transform_data.py`.
+    This command compiles the `utils.pyx` file into a highly optimized C extension (or C++ extension, as configured) that can be imported by `transform_data.py`.  The `-e` (editable) flag is crucial during development, as it means changes to `utils.pyx` are reflected immediately without needing a reinstallation.
 
 ## 4. Usage
 
@@ -88,11 +87,3 @@ Convert charge density for electrons, specifying a spatial domain, using a spati
 
 convert e1 field for a lineout, for modes 0 and 1:
 `python transform_data.py /path/to/data field -f e1 -m 1 -line True`
-
-
-## 10. Authors
-
-- Lucas Ivan Iñigo Gamiz
-- Bertrand Martinez
-- Óscar Amaro
-- Róbert Babjak

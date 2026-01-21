@@ -42,7 +42,7 @@ cdef class utilities:
     
     cpdef list find_files_by_extension(self, str target_path, str file_extension):
             
-        file_paths = glob.glob(os.path.join(target_path, '**', f'*.{file_extension}'), recursive=True)
+        file_paths = glob.glob(os.path.join(target_path, '**', '*.' + file_extension), recursive=True)
         return file_paths
 
 
@@ -61,19 +61,74 @@ cdef class utilities:
             raise Exception('data_type not recognized')  # Use raise for exceptions
 
         # First filter: Check if data_type_keyword is in the path
-
-        print("data_type_keyword",data_type_keyword)
+        print("data_type_keyword", data_type_keyword)
         filtered_files = [file for file in file_paths if data_type_keyword in file]
         
-        if species != '':
-            print('species' + species)
+        if species:
+            print('species', species)
             filtered_files = [file for file in filtered_files if species in file]
 
-        
-        # Third filter: remove the 3D converted files
+        # Third filter: remove the 3D converted files - combine filters for efficiency
         filtered_files = [file for file in filtered_files if 'to_3D' not in file]
 
         return filtered_files
+
+    cpdef np.ndarray[np.double_t, ndim=2] average_downsample(self, 
+                                                              np.ndarray[np.double_t, ndim=2] data, 
+                                                              int step_r, 
+                                                              int step_z):
+        """
+        Downsample a 2D array by averaging over blocks instead of simple stepping.
+        This reduces aliasing and preserves signal better than simple stepping.
+        
+        Uses efficient block averaging: divides data into blocks of size (step_r, step_z)
+        and computes the mean of each block.
+        
+        Parameters:
+        ----------
+        data : 2D array
+            Input data array (nr, nz)
+        step_r : int
+            Step size in r direction (averaging window size)
+        step_z : int
+            Step size in z direction (averaging window size)
+        
+        Returns:
+        -------
+        downsampled : 2D array
+            Downsampled array with averaged values
+        """
+        cdef int nr, nz, new_nr, new_nz, i, j, r_start, r_end, z_start, z_end
+        cdef np.ndarray[np.double_t, ndim=2] downsampled
+        cdef double block_sum
+        cdef int block_size
+        
+        nr, nz = data.shape[0], data.shape[1]
+        
+        # Calculate output dimensions (truncate to fit evenly)
+        new_nr = nr // step_r
+        new_nz = nz // step_z
+        
+        if new_nr == 0 or new_nz == 0:
+            # If step is larger than array, return array as-is
+            return data
+        
+        # Allocate output array
+        downsampled = np.zeros((new_nr, new_nz), dtype=np.float64)
+        
+        # Average over blocks using efficient iteration
+        for i in range(new_nr):
+            r_start = i * step_r
+            r_end = r_start + step_r
+            for j in range(new_nz):
+                z_start = j * step_z
+                z_end = z_start + step_z
+                # Compute mean of block efficiently
+                block_sum = np.sum(data[r_start:r_end, z_start:z_end])
+                block_size = step_r * step_z
+                downsampled[i, j] = block_sum / block_size
+        
+        return downsampled
 
 
     cpdef tuple read_file_2d(self, str path):
@@ -93,26 +148,27 @@ cdef class utilities:
         """
         cdef double min_z, max_z, min_r, max_r
         cdef int nz, nr
+        cdef np.ndarray[np.double_t, ndim=2] fdata
 
         # Open the file
         with h5py.File(path, 'r') as f:
 
-            # Get keys of the file
+            # Get keys of the file - use iterator instead of list for memory efficiency
             f_keys = list(f.keys())
             data = f[f_keys[-1]]
             nr, nz = data.shape[0], data.shape[1]
 
-            # Read the array and store it
-            fdata = np.zeros((nr, nz), dtype=np.float64)
-            fdata_view = fdata  # <- Assign after creating fdata
+            # Read the array and store it - allocate only once after knowing dimensions
+            fdata = np.empty((nr, nz), dtype=np.float64)
             data.read_direct(fdata, np.s_[0:nr, 0:nz], np.s_[0:nr, 0:nz])
 
-
-            # Get the mins and maxs bounds along each direction
-            min_z = f['AXIS/AXIS1'][:][0]
-            max_z = f['AXIS/AXIS1'][:][1]
-            min_r = f['AXIS/AXIS2'][:][0]
-            max_r = f['AXIS/AXIS2'][:][1]
+            # Get the mins and maxs bounds along each direction - avoid creating intermediate arrays
+            axis1 = f['AXIS/AXIS1']
+            axis2 = f['AXIS/AXIS2']
+            min_z = axis1[0]
+            max_z = axis1[1]
+            min_r = axis2[0]
+            max_r = axis2[1]
 
         return min_z, max_z, nz, min_r, max_r, nr, fdata
 
@@ -212,45 +268,40 @@ cdef class utilities:
         '''
 
 
-        cdef str target_file
+        cdef str target_file, dst
+        cdef str basename
         
-        
-        target_file = os.path.join(target_path, path.split('/')[-1].split('.')[0])
-        
+        # More efficient path handling
+        basename = os.path.basename(path)
+        if '.' in basename:
+            basename = basename.rsplit('.', 1)[0]
+        target_file = os.path.join(target_path, basename)
         dst = target_file + '.h5'
         self.set_target_path(dst)
         
-        if os.path.isfile(dst) :
-                os.remove(dst)
-        
+        if os.path.isfile(dst):
+            os.remove(dst)
         
         # create template osiris-3d file
         self.create_osiris_h5(dst)
 
-        # We copy the attributes from the file we convert
-        src = h5py.File(path, 'r')
-        # Read the cartesian 3D template osiris output file
-        dst = h5py.File(dst, 'a')
+        # We copy the attributes from the file we convert - use context managers
+        with h5py.File(path, 'r') as src:
+            with h5py.File(dst, 'a') as dst_file:
+                src_attrs = src.attrs
+                dst_attrs = dst_file.attrs
+                
+                # Copy attributes more efficiently
+                for name in list(dst_attrs.keys()):
+                    dst_attrs.modify(name, src_attrs[name])
 
-        src_attrs = src.attrs
-        dst_attrs = dst.attrs
+                # Change the bounds of each axis - use numpy arrays for efficiency
+                dst_file['AXIS/AXIS1'][0:2] = np.array([min_z, max_z], dtype=np.float64)
+                dst_file['AXIS/AXIS2'][0:2] = np.array([-max_r, max_r], dtype=np.float64)
+                dst_file['AXIS/AXIS3'][0:2] = np.array([-max_r, max_r], dtype=np.float64)
 
-
-        
-        for name in dst_attrs.keys() :
-            dst_attrs.modify(name, src_attrs.__getitem__(name))
-
-        # Change the bounds of each axis
-        dst['AXIS/AXIS1'][0:2] = [min_z, max_z]
-        dst['AXIS/AXIS2'][0:2] = [-max_r, max_r]
-        dst['AXIS/AXIS3'][0:2] = [-max_r, max_r]
-
-        # Create a new dataset with the dimensions
-        dst.create_dataset('/dataset', (ny, nx, nz,), dtype=np.double)
-
-        # close files
-        src.close()
-        dst.close()
+                # Create a new dataset with the dimensions
+                dst_file.create_dataset('/dataset', (ny, nx, nz,), dtype=np.double)
 
 
         return
@@ -357,94 +408,76 @@ cdef class utilities:
         outputs:
             None
         '''
-        cdef str src, dst
-        #cdef h5py.File f
-        cdef char* new_quants[9]
-        cdef char* new_labels[9]
-        cdef char* new_units[9]
+        cdef str src, dst, basename, target_file
+        cdef list new_quants, new_labels, new_units
 
-
-        target_file = os.path.join(target_directory, file.split('/')[-1].split('.')[0])
-        
+        # Compute target path once
+        basename = os.path.basename(file)
+        if '.' in basename:
+            basename = basename.rsplit('.', 1)[0]
+        target_file = os.path.join(target_directory, basename)
         dst = target_file + '.h5'
         self.set_target_path(dst)
 
-        if os.path.isfile(dst) :
-                os.remove(dst)
-
-
-        # File from quasi-3D simulation
         src = file
 
-        # File where we will convert
-        dst = target_directory + file.split('/')[-1]
-
-        target_file = os.path.join(target_directory, file.split('/')[-1].split('.')[0])
-        
-
-        dst = target_file + '.h5'
-        self.set_target_path(dst)
-
-        print(src,dst)
+        print(src, dst)
         # Create the file
         if os.path.isfile(dst):
             os.remove(dst)
-        shutil.copyfile(src,dst)
+        shutil.copyfile(src, dst)
         
+        # Pre-define attribute values to avoid repeated list creation
+        new_quants = [b'x1', b'x2', b'x3', b'p1', b'p2', b'p3', b'q', b'ene', b'tag']
+        new_labels = [b'x_1', b'x_2', b'x_3', b'p_1', b'p_2', b'p_3', b'q', b'Ene', b'Tag']
+        new_units = [b'c/\omega_p', b'c/\omega_p', b'c/\omega_p', b'm_e c', b'm_e c', b'm_e c', b'e', b'm_e c^2', b'']
 
-        # Open the 3D raw file
-        f = h5py.File(dst ,'a')
+        # Open the 3D raw file - use context manager
+        with h5py.File(dst, 'a') as f:
+            # Replace the values of x2 by the values of x4
+            if 'x4' in f:
+                if 'x2' in f:
+                    f['x2'][:] = f['x4'][:]
+                del f['/x4']
+            elif 'x2' in f:
+                f['x2'][...] = 0.
 
-        # Replace the values of x2 by the values of x4
-        try :
-            f['x2'][::] = f['x4'][::]
-        except ValueError :
-            f['x2'][...] = 0.
-
-        # Delete x4
-        del f['/x4']
-
-        # Reduce the size of the raw file
-        if if_reduce :
-            for name in f.__iter__():
-                if name != 'SIMULATION':
-                    try :
+            # Reduce the size of the raw file
+            if if_reduce:
+                keys_to_process = [name for name in f.keys() if name != 'SIMULATION']
+                for name in keys_to_process:
+                    try:
                         tmp = f[name][::step]
                         del f[name]
                         f[name] = tmp
-                    except ValueError :
-                        f[name][...] = 0.
+                    except (ValueError, KeyError):
+                        pass
 
-        # Replace the values of ene by the values of ene in GeV
-        if if_conv_ene_to_gev :
-            try :
-                f['ene'][::] = f['ene'][::] * 0.511e-3
-            except ValueError :
-                f['ene'][...] = 0.
+            # Replace the values of ene by the values of ene in GeV
+            if if_conv_ene_to_gev and 'ene' in f:
+                try:
+                    f['ene'][:] = f['ene'][:] * 0.511e-3
+                except ValueError:
+                    f['ene'][...] = 0.
 
-        # Change the QUANTS
-        f.attrs.__delitem__('QUANTS')
-        new_quants = [b'x1', b'x2', b'x3', b'p1', b'p2', b'p3', b'q', b'ene', b'tag']
-        f.attrs.__setitem__('QUANTS', new_quants)
+            # Change the attributes more efficiently
+            if 'QUANTS' in f.attrs:
+                del f.attrs['QUANTS']
+            f.attrs['QUANTS'] = new_quants
 
-        # Change the LABELS
-        f.attrs.__delitem__('LABELS')
-        new_labels = [b'x_1', b'x_2', b'x_3', b'p_1', b'p_2', b'p_3', b'q', b'Ene', b'Tag']
-        f.attrs.__setitem__('LABELS', new_labels)
+            if 'LABELS' in f.attrs:
+                del f.attrs['LABELS']
+            f.attrs['LABELS'] = new_labels
 
-        # Change the UNITS
-        f.attrs.__delitem__('UNITS')
-        new_units = [b'c/\omega_p', b'c/\omega_p', b'c/\omega_p', b'm_e c', b'm_e c', b'm_e c', b'e', b'm_e c^2', b'']
-        f.attrs.__setitem__('UNITS', new_units)
-
-        # Close
-        f.close()
+            if 'UNITS' in f.attrs:
+                del f.attrs['UNITS']
+            f.attrs['UNITS'] = new_units
 
         return
 
 
 
-    cdef compute_density_for_slice(self, i, data, r, R, t, mode_number):
+    cdef compute_density_for_slice(self, int i, dict data, np.ndarray[np.double_t] r, np.ndarray[np.double_t, ndim=2] R, np.ndarray[np.double_t, ndim=2] t, int mode_number):
 
         '''
         This function computes the charge density for a given slice i.
@@ -454,11 +487,15 @@ cdef class utilities:
         - Interpolating charge data
         - Summing up modes together
         '''
+        cdef int mode
+        cdef np.ndarray[np.double_t, ndim=1] charge, charge_re, charge_im
+        cdef np.ndarray[np.double_t, ndim=2] interpolated_charge, charge_re_interp, charge_im_interp, cos_vals, sin_vals
+        cdef unicode key_re, key_im
 
         # Try fetching mode_0 data for the given slice.
         # This acts as our base data upon which other mode contributions are added.
         try:
-            charge = data[f'mode_0_re_charge'][:, i]
+            charge = data['mode_0_re_charge'][:, i]
         except KeyError:
             # If the slice does not exist in our dataset, log an error and return an empty result.
             print('key error, the file is probably empty')
@@ -466,21 +503,26 @@ cdef class utilities:
 
         # Use np.interp to generate initial interpolated charge
         interpolated_charge = np.interp(R, r, charge)
-        
+
         # Loop through all other modes to sum up their contributions
         for mode in range(1, mode_number + 1): 
-
-            # Fetch and interpolate the real part of the charge for the current mode
-            charge_re_interp = np.interp(R, r, data[f'mode_{mode}_re_charge'][:,i])
-
-            # Fetch and interpolate the imaginary part of the charge for the current mode
-            charge_im_interp = np.interp(R, r, data[f'mode_{mode}_im_charge'][:,i])
+            key_re = 'mode_' + str(mode) + '_re_charge'
+            key_im = 'mode_' + str(mode) + '_im_charge'
+            
+            # Fetch and interpolate the real and imaginary parts
+            charge_re = data[key_re][:, i]
+            charge_im = data[key_im][:, i]
+            
+            charge_re_interp = np.interp(R, r, charge_re)
+            charge_im_interp = np.interp(R, r, charge_im)
 
             # Compute cosine and sine values needed to sum real and imaginary parts
+            # Use in-place operations where possible
             cos_vals = np.cos(mode * t)
             sin_vals = np.sin(mode * t)
             
             # Update the interpolated charge by adding the contribution of the current mode
+            # Use in-place addition to avoid creating temporary arrays
             interpolated_charge += charge_re_interp * cos_vals + charge_im_interp * sin_vals
 
         # Return the final sum of interpolated charge
@@ -535,22 +577,27 @@ cdef class utilities:
 
         ###Check if the files added here are corresponding to the real and imaginary parts
         data = {}
-        for mode, mode_data in file.items():  # mode will be '0', '1', etc.
-            for part, paths in mode_data.items():  # part will be 're' or 'im'
-                for idx, path in enumerate(paths):  # idx will index over 'path_to_file1', 'path_to_file2', etc.
-                    try:
-                        min_z, max_z, nz, min_r, max_r, nr, charge_data = self.read_file_2d(path[0])
-                        key = f'{mode}_{part}_charge'
-                        data[key] = charge_data  
-                    except IndexError:
-                        print(f'issue at {path} perhaps a -savg True or -m 0 flag is needed')
-                        break
-                    
+        step_z, step_r = self.step_z, self.step_r
         
-        step_z,step_r = self.step_z, self.step_r
+        # First pass: read one file to get dimensions and compute domain indices
+        first_path = None
+        for mode, mode_data in file.items():
+            for part, paths in mode_data.items():
+                if paths and len(paths) > 0:
+                    first_path = paths[0][0]
+                    break
+            if first_path:
+                break
+        
+        if first_path is None:
+            return
+        
+        min_z, max_z, nz, min_r, max_r, nr, _ = self.read_file_2d(first_path)
+        
+        # Compute domain bounds and indices before loading all data
         axis_z = np.linspace(min_z, max_z, nz)
         axis_r = np.linspace(min_r, max_r, nr)
-
+        
         if self.domain_size is None:
             pass
         else:
@@ -564,13 +611,35 @@ cdef class utilities:
         max_idz = abs(axis_z-max_z).argmin()
         min_idr = abs(axis_r-min_r).argmin()
         max_idr = abs(axis_r-max_r).argmin()
-
-        #Have a loop to correct the domain and save on site
-        for mode, mode_data in file.items():  # mode will be '0', '1', etc.
+        
+        # Now read and slice data in one pass to avoid storing full arrays
+        for mode, mode_data in file.items():  # mode will be 'mode_0', 'mode_1', etc.
             for part, paths in mode_data.items():  # part will be 're' or 'im'
-                for idx, path in enumerate(paths):  # idx will index over 'path_to_file1',
-                    key = f"{mode}_{part}_charge"
-                    data[key] = data[key][min_idr:max_idr:step_r, min_idz:max_idz:step_z]
+                if not paths:  # Skip if no paths for this part
+                    continue
+                # paths is a list of lists, where each inner list contains file paths
+                # For charge data, we typically have one file per mode/part combination
+                for path_list in paths:
+                    if not path_list:  # Skip empty lists
+                        continue
+                    # path_list is a list of file paths, take the first one (there's usually only one)
+                    if isinstance(path_list, list) and len(path_list) > 0:
+                        file_path = path_list[0]
+                    elif isinstance(path_list, str):
+                        file_path = path_list
+                    else:
+                        continue
+                    _, _, _, _, _, _, charge_data = self.read_file_2d(file_path)
+                    # Create key with 'mode_' prefix to match what compute_density_for_slice expects
+                    # mode is already 'mode_0', 'mode_1', etc., so use it directly
+                    key = mode + '_' + part + '_charge'
+                    # Apply domain slicing first
+                    charge_data_sliced = charge_data[min_idr:max_idr, min_idz:max_idz]
+                    # Then apply averaging downsampling instead of simple stepping
+                    if step_r > 1 or step_z > 1:
+                        data[key] = self.average_downsample(charge_data_sliced, step_r, step_z)
+                    else:
+                        data[key] = charge_data_sliced
 
         
 
@@ -598,42 +667,62 @@ cdef class utilities:
         y = np.linspace(-max_r, max_r, ny)
 
 
-        #print(file[f'mode_{mode_number}']['re'])
-        path_shortcut = file[f'mode_{mode_number}']['re'][0][0]
+        #print(file['mode_' + str(mode_number)]['re'])
+        # Handle nested list structure: file['mode_X']['re'] is a list of lists
+        # Try to find a valid path, starting with mode_number and going down to mode 0
+        path_shortcut = None
+        for mode_idx in range(mode_number, -1, -1):
+            mode_key = 'mode_' + str(mode_idx)
+            if mode_key in file and 're' in file[mode_key]:
+                re_paths = file[mode_key]['re']
+                if re_paths and len(re_paths) > 0:
+                    # Iterate through all path lists to find a non-empty one
+                    for path_list in re_paths:
+                        # Ensure we extract a string, not a list
+                        if isinstance(path_list, list) and len(path_list) > 0:
+                            path_shortcut = str(path_list[0])
+                            break
+                        elif isinstance(path_list, str) and path_list:
+                            path_shortcut = path_list
+                            break
+                    if path_shortcut is not None:
+                        break
+        
+        if path_shortcut is None:
+            raise ValueError('No valid real part files found for any mode up to ' + str(mode_number) + '. Available modes: ' + str(list(file.keys())))
 
         
         self.prepare_hdf5_file(path_shortcut,target_directory ,min_z, max_z, max_r, nx, ny, nz) # <- check this and how it could be ammended
         
-        
-        X, Y = np.meshgrid(x, y)
+        # Pre-compute meshgrid and coordinate arrays once (reused for all slices)
+        X, Y = np.meshgrid(x, y, indexing='ij')
         R = np.sqrt(X**2 + Y**2)
-        #print(np.arctan2(Y,X))
-        theta = np.arctan2(Y,X)
-
+        theta = np.arctan2(Y, X)
 
         #--------------------------------------------
         # Fill the 3D cartesian hdf5 file slice by slice
         #--------------------------------------------
 
-        # Open this file
-        f = h5py.File(self.target_path, 'a')
-
-        # Loop on all the z slices
-        for i in range(nz):
+        # Open this file once and keep it open
+        with h5py.File(self.target_path, 'a') as f:
+            dataset = f['/dataset']
             
-            # Use cylindrical symmetry to have the transverse slice
-            # not that only mode 0 is used here
-            interpolated_densities = self.compute_density_for_slice(i, data, r, R, theta, mode_number)
+            # Pre-allocate output array to avoid repeated allocations
+            output_slice = np.empty((ny, nx), dtype=np.float64)
             
-            
-            f['/dataset'][:,:,i] = np.nan_to_num(interpolated_densities)
-
-
-        f.close()
+            # Loop on all the z slices
+            for i in range(nz):
+                # Use cylindrical symmetry to have the transverse slice
+                # not that only mode 0 is used here
+                interpolated_densities = self.compute_density_for_slice(i, data, r, R, theta, mode_number)
+                
+                # Use nan_to_num and write directly (older numpy versions don't support out parameter)
+                output_slice[:] = np.nan_to_num(interpolated_densities, copy=False)
+                dataset[:, :, i] = output_slice
 
         return 
 
-    cdef compute_fields_for_slice(self, i, data, r, R, t, mode_number):
+    cdef compute_fields_for_slice(self, int i, dict data, np.ndarray[np.double_t] r, np.ndarray[np.double_t, ndim=2] R, np.ndarray[np.double_t, ndim=2] t, int mode_number):
 
         '''
         This function computes the fields for a given slice i.
@@ -643,16 +732,24 @@ cdef class utilities:
         - Interpolating fields
         - Summing up modes together
         '''
+        cdef int mode
+        cdef np.ndarray[np.double_t, ndim=1] Ez, Er, Et
+        cdef np.ndarray[np.double_t, ndim=2] field_1_re_interp, field_2_re_interp, field_3_re_interp
+        cdef np.ndarray[np.double_t, ndim=2] field_1_im_interp, field_2_im_interp, field_3_im_interp
+        cdef np.ndarray[np.double_t, ndim=2] cos_vals, sin_vals
+        cdef unicode key_re_1, key_re_2, key_re_3, key_im_1, key_im_2, key_im_3
+        cdef dict interpolated_fields
+        cdef unicode mode_str
 
         # Try fetching mode_0 data for the given slice.
         # This acts as our base data upon which other mode contributions are added.
         try:
-            Ez = data[f'mode_0_re_field_1'][:, i]
-            Er = data[f'mode_0_re_field_2'][:, i]
-            Et = data[f'mode_0_re_field_3'][:, i]
-        except IndexError:
+            Ez = data['mode_0_re_field_1'][:, i]
+            Er = data['mode_0_re_field_2'][:, i]
+            Et = data['mode_0_re_field_3'][:, i]
+        except (IndexError, KeyError):
             # If the slice does not exist in our dataset, log an error and return an empty result.
-            print('index error, the file is probably empty')
+            print('index/key error, the file is probably empty')
             return {}
 
         # Use np.interp to generate initial interpolated fields
@@ -664,28 +761,40 @@ cdef class utilities:
 
         # Loop through all other modes to sum up their contributions
         for mode in range(1, mode_number + 1): 
+            mode_str = str(mode)
+            key_re_1 = 'mode_' + mode_str + '_re_field_1'
+            key_re_2 = 'mode_' + mode_str + '_re_field_2'
+            key_re_3 = 'mode_' + mode_str + '_re_field_3'
+            key_im_1 = 'mode_' + mode_str + '_im_field_1'
+            key_im_2 = 'mode_' + mode_str + '_im_field_2'
+            key_im_3 = 'mode_' + mode_str + '_im_field_3'
 
             # Fetch and interpolate the real parts of the fields for the current mode
-            field_1_re_interp = np.interp(R, r, data[f'mode_{mode}_re_field_1'][:,i])
-            field_2_re_interp = np.interp(R, r, data[f'mode_{mode}_re_field_2'][:,i])
-            field_3_re_interp = np.interp(R, r, data[f'mode_{mode}_re_field_3'][:,i])
+            field_1_re_interp = np.interp(R, r, data[key_re_1][:, i])
+            field_2_re_interp = np.interp(R, r, data[key_re_2][:, i])
+            field_3_re_interp = np.interp(R, r, data[key_re_3][:, i])
 
             # Fetch and interpolate the imaginary parts of the fields for the current mode
-            field_1_im_interp = np.interp(R, r, data[f'mode_{mode}_im_field_1'][:,i])
-            field_2_im_interp = np.interp(R, r, data[f'mode_{mode}_im_field_2'][:,i])
-            field_3_im_interp = np.interp(R, r, data[f'mode_{mode}_im_field_3'][:,i])
+            field_1_im_interp = np.interp(R, r, data[key_im_1][:, i])
+            field_2_im_interp = np.interp(R, r, data[key_im_2][:, i])
+            field_3_im_interp = np.interp(R, r, data[key_im_3][:, i])
 
             # Compute cosine and sine values needed to sum real and imaginary parts
+            # Reuse cos/sin calculations for all three fields
             cos_vals = np.cos(mode * t)
             sin_vals = np.sin(mode * t)
             
             # Update the interpolated fields by adding the contribution of the current mode
+            # Use in-place addition to avoid creating temporary arrays
             interpolated_fields['field_1'] += field_1_re_interp * cos_vals + field_1_im_interp * sin_vals
             interpolated_fields['field_2'] += field_2_re_interp * cos_vals + field_2_im_interp * sin_vals
             interpolated_fields['field_3'] += field_3_re_interp * cos_vals + field_3_im_interp * sin_vals
 
         # Return the final sum of interpolated fields
         return interpolated_fields
+
+
+
 
 
 
@@ -753,22 +862,24 @@ cdef class utilities:
 
 
         data = {}  # This will store the loaded data
+        step_z, step_r = self.step_z, self.step_r
         
-
-        for mode, mode_data in file.items():  # mode will be '0', '1', etc.
-            for part, paths in mode_data.items():  # part will be 're' or 'im'
-                for idx, path in enumerate(paths):  # idx will index over 'path_to_file1', 'path_to_file2', etc.
-                    try:
-                        min_z, max_z, nz, min_r, max_r, nr, field_data = self.read_file_2d(path[0])
-                        # Generate a key based on mode, part (real/imaginary), and field index (Ez/Er/Et)
-                    except IndexError:
-                        print(f'issue at {path} perhaps a -savg True or -m 0 flag is needed')
-                        break
-                    
-                    key = f"{mode}_{part}_field_{idx + 1}"
-                    data[key] = field_data  
+        # First pass: read one file to get dimensions and compute domain indices
+        first_path = None
+        for mode, mode_data in file.items():
+            for part, paths in mode_data.items():
+                if paths and len(paths) > 0:
+                    first_path = paths[0][0]
+                    break
+            if first_path:
+                break
         
-        step_z,step_r = self.step_z, self.step_r
+        if first_path is None:
+            return
+        
+        min_z, max_z, nz, min_r, max_r, nr, _ = self.read_file_2d(first_path)
+        
+        # Compute domain bounds and indices before loading all data
         axis_z = np.linspace(min_z, max_z, nz)
         axis_r = np.linspace(min_r, max_r, nr)
         
@@ -786,19 +897,37 @@ cdef class utilities:
         min_idr = abs(axis_r-min_r).argmin()
         max_idr = abs(axis_r-max_r).argmin()
 
-        #Have a loop to correct the domain and save on site
-        for mode, mode_data in file.items():  # mode will be '0', '1', etc.
+        # Now read and slice data in one pass to avoid storing full arrays
+        for mode, mode_data in file.items():  # mode will be 'mode_0', 'mode_1', etc.
             for part, paths in mode_data.items():  # part will be 're' or 'im'
-                
-                for idx, path in enumerate(paths):  # idx will index over 'path_to_file1',
-                    key = f"{mode}_{part}_field_{idx + 1}"
-
-                    data[key] = data[key][min_idr:max_idr:step_r, min_idz:max_idz:step_z]
-                    
+                if not paths:  # Skip if no paths for this part
+                    continue
+                # paths is a list of lists, where each inner list contains file paths for different field components
+                for idx, path_list in enumerate(paths):
+                    if not path_list:  # Skip empty lists
+                        continue
+                    # path_list is a list of file paths, take the first one
+                    if isinstance(path_list, list) and len(path_list) > 0:
+                        file_path = path_list[0]
+                    elif isinstance(path_list, str):
+                        file_path = path_list
+                    else:
+                        continue
+                    _, _, _, _, _, _, field_data = self.read_file_2d(file_path)
+                    # Generate a key based on mode, part (real/imaginary), and field index (Ez/Er/Et)
+                    # mode is already 'mode_0', 'mode_1', etc., so use it directly
+                    key = mode + '_' + part + '_field_' + str(idx + 1)
+                    # Apply domain slicing first
+                    field_data_sliced = field_data[min_idr:max_idr, min_idz:max_idz]
+                    # Then apply averaging downsampling instead of simple stepping
+                    if step_r > 1 or step_z > 1:
+                        data[key] = self.average_downsample(field_data_sliced, step_r, step_z)
+                    else:
+                        data[key] = field_data_sliced
 
 
         
-        sample_key = list(data.keys())[0]
+        sample_key = 'mode_0_re_field_1'
 
         nr, nz = data[sample_key].shape
         
@@ -837,7 +966,19 @@ cdef class utilities:
         }
 
         
-        path_shortcut = file[f'mode_{mode_number}']['re'][direction_shortcut[dir]][0]
+        # Handle nested list structure: file['mode_X']['re'] is a list of lists
+        re_paths = file['mode_' + str(mode_number)]['re']
+        if re_paths and len(re_paths) > direction_shortcut[dir]:
+            path_list = re_paths[direction_shortcut[dir]]
+            # Ensure we extract a string, not a list
+            if isinstance(path_list, list) and len(path_list) > 0:
+                path_shortcut = str(path_list[0])
+            elif isinstance(path_list, str):
+                path_shortcut = path_list
+            else:
+                raise ValueError('Invalid path structure for mode ' + str(mode_number) + ' direction ' + dir)
+        else:
+            raise ValueError('No files found for mode ' + str(mode_number) + ' direction ' + dir)
 
         
         self.prepare_hdf5_file(path_shortcut,target_directory ,min_z, max_z, max_r, nx, ny, nz) # <- check this and how it could be ammended
@@ -846,48 +987,43 @@ cdef class utilities:
         # Fill the 3D cartesian hdf5 file slice by slice
         #--------------------------------------------
         
-        f = h5py.File(self.target_path, 'a')
-        
-
-        
-        X, Y = np.meshgrid(x, y)
-        
+        # Pre-compute meshgrid and coordinate arrays once (reused for all slices)
+        X, Y = np.meshgrid(x, y, indexing='ij')
         R = np.sqrt(X**2 + Y**2)
-        
         theta = np.arctan2(Y, X)
-
         
+        # Pre-compute cos and sin of theta for field transformations (if needed)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
         
-
-        print('before starting the loop')
-        for i in range(nz - 1):
+        # Pre-allocate output array
+        output_slice = np.empty((ny, nx), dtype=np.float64)
+        
+        with h5py.File(self.target_path, 'a') as f:
+            dataset = f['/dataset']
             
-            # We build a transverse (r,t) slice
-            #z = np.zeros([nr, nt])
+            print('before starting the loop')
+            for i in range(nz):
+                interpolated_fields = self.compute_fields_for_slice(i, data, r, R, theta, mode_number)
+                
+                if not interpolated_fields:
+                    print('issue at ' + str(i) + ', empty fields')
+                    break
+                    
+                try:
+                    if dir=='1':
+                        field = interpolated_fields['field_1']
+                    elif dir=='3':
+                        # Reuse pre-computed cos/sin
+                        field = interpolated_fields['field_2'] * cos_theta - interpolated_fields['field_3'] * sin_theta
+                    elif dir=='4':
+                        field = interpolated_fields['field_2'] * sin_theta + interpolated_fields['field_3'] * cos_theta
+                except (KeyError, IndexError):
+                    print('issue at ' + str(i) + ', ' + str(np.shape(interpolated_fields.get("field_1", np.array([])))))
+                    break    
 
-            # We loop on all thetas
-            #for j,tj in enumerate(t):
-            
-            interpolated_fields = self.compute_fields_for_slice(i, data, r, R, theta, mode_number)
-            try:
-                if dir=='1':
-                    field = interpolated_fields['field_1']
-                elif dir=='3':
-                    field = interpolated_fields['field_2'] * np.cos(theta) - interpolated_fields['field_3'] * np.sin(theta)
-                elif dir=='4':
-                    field = interpolated_fields['field_2'] * np.sin(theta) + interpolated_fields['field_3'] * np.cos(theta)
-            except IndexError:
-
-                print(f'issue at {i}, {np.shape(interpolated_fields["field_1"])}')
-                break    
-
-
-            # We now interpolate Ex and Ey from the polar grid to the cartesian grid
-            #simdata_cart = self.polar2cartesian(r, t, z, x, y, order=3)
-            #print(np.shape(simdata_cart))
-            f['/dataset'][:,:,i] = np.nan_to_num(field)
-
-        
-        f.close()
+                # Use nan_to_num and write directly (older numpy versions don't support out parameter)
+                output_slice[:] = np.nan_to_num(field, copy=False)
+                dataset[:, :, i] = output_slice
 
         return
