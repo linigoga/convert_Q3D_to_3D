@@ -794,7 +794,7 @@ cdef class utilities:
                     key = f"{mode}_{part}_field_{idx + 1}"
 
                     data[key] = data[key][min_idr:max_idr:step_r, min_idz:max_idz:step_z]
-                    print(key)
+                    
 
 
         
