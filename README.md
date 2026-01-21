@@ -39,8 +39,8 @@ It is **highly recommended** to use a virtual environment to manage these depend
 
 1.  **Clone the Repository (or Download the Files):**
     ```bash
-    git clone <your_repository_url>
-    cd <repository_name>
+    git clone <https://github.com/linigoga/convert_Q3D_to_3D/tree/main>
+    cd <convert_Q3D_to_3D>
     ```
     If you don't use git, download the files (`transform_data.py`, `utils.pyx`, `setup.py`) and place them in the same directory.
 
