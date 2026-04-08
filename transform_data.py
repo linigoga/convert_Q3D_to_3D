@@ -50,8 +50,8 @@ def process_single_dump_charge(args):
     uts.set_step_r(step_r)
     if domain is not None:
         domain_dict = {}
-        domain_dict['r'] = domain[:2]
-        domain_dict['z'] = domain[2:]
+        domain_dict['z'] = [domain[0], domain[1]]
+        domain_dict['r'] = [domain[2], domain[3]]
         uts.set_domain_size(domain_dict)
     else:
         uts.set_domain_size(domain)
@@ -73,8 +73,8 @@ def process_single_dump_field(args):
     uts.set_step_r(step_r)
     if domain is not None:
         domain_dict = {}
-        domain_dict['r'] = [domain[0], domain[1]]
-        domain_dict['z'] = [domain[2], domain[-1]]
+        domain_dict['z'] = [domain[0], domain[1]]
+        domain_dict['r'] = [domain[2], domain[3]]
         uts.set_domain_size(domain_dict)
     else:
         uts.set_domain_size(domain)
@@ -110,8 +110,8 @@ def process_single_dump_raw(args):
     uts.set_step_r(step_r)
     if domain is not None:
         domain_dict = {}
-        domain_dict['r'] = domain[:2]
-        domain_dict['z'] = domain[2:]
+        domain_dict['z'] = [domain[0], domain[1]]
+        domain_dict['r'] = [domain[2], domain[3]]
         uts.set_domain_size(domain_dict)
     else:
         uts.set_domain_size(domain)
@@ -234,8 +234,8 @@ class ProcessData():
             uts.set_domain_size(self.domain)
         elif self.domain is not None:
             domain = {}
-            domain['r'] = [self.domain[0],self.domain[1]]
-            domain['z'] = [self.domain[2],self.domain[-1]]
+            domain['z'] = [self.domain[0], self.domain[1]]
+            domain['r'] = [self.domain[2], self.domain[3]]
             uts.set_domain_size(domain)
 
         file_extension = 'h5'
@@ -495,8 +495,8 @@ class ProcessData():
 
             elif self.domain is not None:
                 domain = {}
-                domain['r'] = self.domain[:2]
-                domain['z'] = self.domain[2:]
+                domain['z'] = [self.domain[0], self.domain[1]]
+                domain['r'] = [self.domain[2], self.domain[3]]
                 uts.set_domain_size(domain)
             
             # Loop on all files
@@ -594,8 +594,8 @@ class ProcessData():
         
         if self.domain is not None:
             domain = {}
-            domain['r'] = self.domain[:2]
-            domain['z'] = self.domain[2:]
+            domain['r'] = [self.domain[2],self.domain[3]]
+            domain['z'] = [self.domain[0],self.domain[1]]
             uts.set_domain_size(domain)
 
 
@@ -843,7 +843,8 @@ def argparser():
     parser.add_argument('-s', '--species', metavar='SPECIES', type=str, default='')
     parser.add_argument('-f', '--field', metavar='FIELD', type=str, default='e2',help='field to be converted')
     parser.add_argument('-m', '--mode', metavar='MODE', type=int, default=1, help='mode to be converted')
-    parser.add_argument('-d', '--domain', metavar='DOMAIN', type=float, nargs=4, default=None,help='domain to be converted')
+    parser.add_argument('-d', '--domain', metavar='DOMAIN', type=float, nargs=4, default=None,
+                        help='physical sub-domain: min_z max_z min_r max_r')
     parser.add_argument('-t', '--timestep', metavar='TIME', type=float,nargs= '+',default=None,help='timestep to be converted')
     parser.add_argument('-savg', '--spatial_average', metavar='SPATIAL_AVERAGE', type=bool, default=False)
     parser.add_argument('-line', '--lineout', metavar='LINEOUT', type=bool, default=False)

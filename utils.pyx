@@ -500,7 +500,7 @@ cdef class utilities:
             # If the slice does not exist in our dataset, log an error and return an empty result.
             print('key error, the file is probably empty')
             return np.zeros_like(R)
-
+        print(charge)
         # Use np.interp to generate initial interpolated charge
         interpolated_charge = np.interp(R, r, charge)
 
@@ -601,8 +601,9 @@ cdef class utilities:
         if self.domain_size is None:
             pass
         else:
-            min_z += self.domain_size['z'][0]
-            max_z -= self.domain_size['z'][1]
+            # domain_size uses absolute bounds: z = [min_z, max_z], r = [min_r, max_r]
+            min_z = self.domain_size['z'][0]
+            max_z = self.domain_size['z'][1]
             min_r = self.domain_size['r'][0]
             max_r = self.domain_size['r'][1]
 
@@ -611,7 +612,8 @@ cdef class utilities:
         max_idz = abs(axis_z-max_z).argmin()
         min_idr = abs(axis_r-min_r).argmin()
         max_idr = abs(axis_r-max_r).argmin()
-        
+        print(f"axis_z: {axis_z.min()}, {axis_z.max()}, axis_r: {axis_r.min()}, {axis_r.max()}")
+        print(f"min_idr: {min_idr}, max_idr: {max_idr}, min_idz: {min_idz}, max_idz: {max_idz}")
         # Now read and slice data in one pass to avoid storing full arrays
         for mode, mode_data in file.items():  # mode will be 'mode_0', 'mode_1', etc.
             for part, paths in mode_data.items():  # part will be 're' or 'im'
@@ -634,11 +636,16 @@ cdef class utilities:
                     # mode is already 'mode_0', 'mode_1', etc., so use it directly
                     key = mode + '_' + part + '_charge'
                     # Apply domain slicing first
+                    
+                    print(np.shape(charge_data))
                     charge_data_sliced = charge_data[min_idr:max_idr, min_idz:max_idz]
+                    print(f"charge_data_sliced: {charge_data_sliced}")
+                    
                     # Then apply averaging downsampling instead of simple stepping
                     if step_r > 1 or step_z > 1:
                         data[key] = self.average_downsample(charge_data_sliced, step_r, step_z)
                     else:
+                        print(charge_data_sliced)
                         data[key] = charge_data_sliced
 
         
@@ -886,8 +893,8 @@ cdef class utilities:
         if self.domain_size is None:
             pass
         else:
-            min_z += self.domain_size['z'][0]
-            max_z -= self.domain_size['z'][1]
+            min_z = self.domain_size['z'][0]
+            max_z = self.domain_size['z'][1]
             min_r = self.domain_size['r'][0]
             max_r = self.domain_size['r'][1]
 
